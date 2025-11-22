@@ -1,11 +1,12 @@
 const express = require("express");
-const crypto = require("crypto");
 const axios = require("axios");
 const winston = require("winston");
 const fs = require("fs");
 const path = require("path");
 
-// ----- Logger setup -----
+// =======================================
+// LOGGING SETUP
+// =======================================
 const logsDir = path.join(__dirname, "logs");
 if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
 
@@ -21,25 +22,12 @@ const logger = winston.createLogger({
   ],
 });
 
-// ----- Environment -----
+// =======================================
+// ENVIRONMENT VARIABLES
+// =======================================
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL || "";
-const U7BUY_SECRET = process.env.U7BUY_SECRET || "";
-const SIGNATURE_HEADER = process.env.U7BUY_SIGNATURE_HEADER || "x-u7buy-signature";
 const PORT = process.env.PORT || 3000;
 
-// ----- Signature helper -----
-function safeCompare(a, b) {
-  try {
-    const A = Buffer.from(a);
-    const B = Buffer.from(b);
-    if (A.length !== B.length) return false;
-    return crypto.timingSafeEqual(A, B);
-  } catch {
-    return false;
-  }
-}
-
-// ----- Express setup -----
 const app = express();
 
 app.use(express.json({
@@ -48,34 +36,28 @@ app.use(express.json({
   }
 }));
 
-// Health check
+// =======================================
+// HEALTH CHECK
+// =======================================
 app.get("/health", (req, res) => {
   res.status(200).json({ status: "ok" });
 });
 
-// Webhook
+// =======================================
+// WEBHOOK ENDPOINT (NO SIGNATURE!)
+// =======================================
 app.post("/webhook", async (req, res) => {
   try {
-    const rawBody = req.rawBody || Buffer.from(JSON.stringify(req.body));
-    const signature = req.get(SIGNATURE_HEADER) || "";
+    const payload = req.body;
+    logger.info("Received webhook: " + JSON.stringify(payload));
 
-    // Validate signature
-    if (U7BUY_SECRET) {
-      const expected = crypto.createHmac("sha256", U7BUY_SECRET).update(rawBody).digest("hex");
-      if (!safeCompare(expected, signature)) {
-        logger.warn("Invalid Signature");
-        return res.status(401).send("Invalid signature");
-      }
-    }
-
-    const payloadString = JSON.stringify(req.body);
-    logger.info("Received webhook: " + payloadString);
-
-    // Respond immediately for U7BUY requirement
+    // BALAS LANGSUNG KE U7BUY
     res.status(200).send("OK");
 
-    const truncated = payloadString.length > 1900
-      ? payloadString.slice(0, 1900) + "\n... (truncated)"
+    // Format payload untuk Discord
+    const payloadString = JSON.stringify(payload, null, 2);
+    const truncated = payloadString.length > 1900 
+      ? payloadString.substring(0, 1900) + "\n... (truncated)"
       : payloadString;
 
     // Discord embed message
@@ -83,14 +65,11 @@ app.post("/webhook", async (req, res) => {
       embeds: [
         {
           title: "📩 Webhook U7BUY Diterima",
-          description: "Payload diterima dari U7BUY",
+          description: "Payload berhasil diterima dari API U7BUY",
           fields: [
-            { name: "Signature Valid", value: U7BUY_SECRET ? "Yes" : "No", inline: true },
             {
               name: "Data",
-              value: `\`\`\`json
-${truncated}
-\`\`\``
+              value: `\`\`\`json\n${truncated}\n\`\`\``
             }
           ],
           timestamp: new Date().toISOString()
@@ -98,22 +77,24 @@ ${truncated}
       ]
     };
 
-    // Send to Discord
+    // Kirim ke Discord
     if (DISCORD_WEBHOOK_URL) {
       try {
-        await axios.post(DISCORD_WEBHOOK_URL, discordMsg, {
-          headers: { "Content-Type": "application/json" }
-        });
+        await axios.post(DISCORD_WEBHOOK_URL, discordMsg);
       } catch (err) {
-        logger.error("Discord send error: " + err.message);
+        logger.error("Discord error: " + err.message);
       }
     }
 
   } catch (err) {
-    logger.error("Error: " + err.message);
+    logger.error("Server error: " + err.message);
     try { res.status(500).send("Server error"); } catch {}
   }
 });
 
-// Start server
-app.listen(PORT, () => logger.info("Server berjalan di port " + PORT));
+// =======================================
+// START SERVER
+// =======================================
+app.listen(PORT, () => {
+  logger.info("Server berjalan di port " + PORT);
+});
